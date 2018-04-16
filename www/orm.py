@@ -6,6 +6,12 @@ import aiomysql
 def log(sql, args=()):
     logging.info('SQL: %s' % sql)
 
+def create_args_string(num):
+    L = []
+    for n in range(num):
+        L.append("?")
+    return ', '.join(L)
+
 # ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓数据库↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
 
 # 创建一个连接池
@@ -22,7 +28,7 @@ async def create_pool(loop, **kw):
         charset=kw.get('charset', 'utf8'),
         autocommit=kw.get('autocommit', True),
         maxsize=kw.get('maxsize', 10),
-        minseze=kw.get('minsize', 1),
+        minsize=kw.get('minsize', 1),
         loop=loop
     )
 
@@ -33,38 +39,40 @@ async def select(sql, args, size=None):
     # 导入全局变量连接池
     global __pool
     # 连接mysql数据库
-    with (await __pool) as conn:
+    async with __pool.get() as conn:
         # 返回该连接的游标
-        cur = await conn.cursor(aiomysql.DictCursor)
-        # 把'?'替换成'%s'，因为SQL语句的占位符是?,而mysql语句的占位符是'%s'
-        await cur.execute(sql.replace('?', '%s'), args or ())
-        # 如果存在size值就只取size数量的结果，如果不存在就全取
-        if size:
-            rs = await cur.fetchmany(size)
-        else:
-            rs = await cur.fetchall()
-        # 关闭cur游标
-        await cur.close()
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            # 把'?'替换成'%s'，因为SQL语句的占位符是?,而mysql语句的占位符是'%s'
+            await cur.execute(sql.replace('?', '%s'), args or ())
+            # 如果存在size值就只取size数量的结果，如果不存在就全取
+            if size:
+                rs = await cur.fetchmany(size)
+            else:
+                rs = await cur.fetchall()
         # 打印返回多少行数
         logging.info('rows returned: %s' % len(rs))
         return rs
 
 # 封装Insert, Update, Delete 语句
-async def execute(sql, args):
+async def execute(sql, args, autocommit=True):
     # 打印SQL语句
     log(sql)
     # 连接数据库
-    with (await __pool) as conn:
+    async with __pool.get() as conn:
+        if not autocommit:
+            await conn.begin()
         try:
             # 返回该连接的游标
-            cur = await conn.cursor()
-            # 替换占位符
-            await cur.execute(sql.replace('?', '%s'), args)
-            # 返回查询或更新所发生行数
-            affected = cur.rowcount
-            # 关闭游标
-            await cur.close()
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                # 替换占位符
+                await cur.execute(sql.replace('?', '%s'), args)
+                # 返回查询或更新所发生行数
+                affected = cur.rowcount
+                if not autocommit:
+                    await conn.commit()
         except BaseException as e:
+            if not autocommit:
+                await conn.rollback()
             raise
         return affected
 
@@ -91,12 +99,13 @@ class ModelMetaclass(type):
                 mappings[k] = v
                 if v.primary_key:
                     # 找到主键
-                    raise RuntimeError('Duplicate primary key for field: %s' % k)
-                primaryKey = k
-            else:
-                fields.append(k)
+                    if primaryKey:
+                        raise StandardError('Duplicate primary key for field: %s ' % k)
+                    primaryKey = k
+                else:
+                    fields.append(k)
         if not primaryKey:
-            raise RuntimeError('Primary key not found.')
+            raise StandardError('Primary key not found.')
         for k in mappings.keys():
             attrs.pop(k)
         escaped_fields = list(map(lambda f: '`%s`' % f, fields))
@@ -107,7 +116,7 @@ class ModelMetaclass(type):
         # 构造默认的SELECT, INSERT, UPDATE和DELETE语句
         attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
         attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
-        attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (tableName, ', '.join(map(lambda f: '`%s`=?'% (mappings.get(f).name or f), fields)), primaryKey)
+        attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (tableName,', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f),fields)),primaryKey)
         attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
         return type.__new__(cls, name, bases, attrs)
 
@@ -136,7 +145,7 @@ class Model(dict, metaclass=ModelMetaclass):
                 value = field.default() if callable(field.default) else field.default
                 logging.debug('using default value for %s: %s' % (key, str(value)))
                 setattr(self, key, value)
-            return value
+        return value
     @classmethod
     async def findAll(cls, where=None, args=None, **kw):
         # find objects by where clause.
@@ -174,11 +183,19 @@ class Model(dict, metaclass=ModelMetaclass):
         rs = await select(' '.join(sql), args, 1)
         if len(rs) == 0:
             return None
+        return rs[0]['_num_']
+
+    @classmethod
+    async def find(cls, pk):
+        ' find object by primary key. '
+        rs = await select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1)
+        if len(rs) == 0:
+            return None
         return cls(**rs[0])
 
     async def save(self):
-        args =  list(map(self.getValueOrDefault, self.__fields__))
-        args.append(self.getValue(self.__primary_key__))
+        args = list(map(self.getValueOrDefault, self.__fields__))
+        args.append(self.getValueOrDefault(self.__primary_key__))
         rows = await execute(self.__insert__, args)
         if rows != 1:
             logging.warning('failed to insert record: affected rows: %s' % rows)
