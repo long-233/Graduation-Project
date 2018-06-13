@@ -1,0 +1,66 @@
+{% extends '__base__.html' %}
+
+{% block title %}心情随笔{% endblock %}
+
+{% block beforehead %}
+
+<style>
+
+.times ul { /*做时间轴的线*/
+    margin-left:20px;
+    border-left:2px solid #ccc;
+}
+.times ul li { /*圆点定位的父层*/
+    position:relative;
+}
+.times ul li span { /*时间*/
+    margin-left:20px;
+    line-height:24px;
+    font-size:12px;
+    color:#888;
+}
+.times ul li span:before { /*圆点*/
+    content:'';
+    position:absolute;
+    top:6px;
+    left:-37px;
+    width:8px;
+    height:8px;
+    border:2px solid #888;
+    border-radius:50%;
+    box-sizing:content-box;
+    display: block;
+}
+.times ul li p { /*时间的描述*/
+    margin-left:20px;
+    line-height:30px;
+    font-size:14px;
+    color:#555;
+    width:70%;
+}
+.times ul li:hover span { /*鼠标划过时时间效果 */
+    color:#ff6600;
+}
+.times ul li:hover span:after { /*鼠标划过时圆点效果 */
+    border:2px solid #ff6600;
+}
+</style>
+
+{% endblock %}
+
+{% block content %}
+
+<div class="times">
+    <ul>
+        <li>
+            <span>时间:2015-04-02</span>
+            <p>时间轴内容</p>
+        </li>
+        <li>
+            <span>时间:2015-04-05</span>
+            <p>人，小的时候，都希望自己快点长大，长大了，却发现遗失了童年；单身时，羡慕恋人的甜蜜，恋爱时，却又忍不住怀念单身时的自由。很多时候，很多事物，没有得到时总觉得美好，得到之后才明白：我们得到的同时也在失去。</p>
+        </li>
+    </ul>
+</div>
+
+{% endblock %}
